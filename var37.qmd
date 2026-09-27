@@ -1,0 +1,549 @@
+---
+title: "VAR e SVAR"
+format: html
+server: shiny
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| context: setup
+library(shiny)
+library(readxl)
+library(vars)
+library(BVAR)
+library(coda)
+```
+
+```{r}
+#| context: server-start
+# Roda uma única vez quando o app inicia (o .xlsx precisa estar na mesma pasta do .qmd)
+l2 <- read_excel("dadoslista2.xlsx")
+
+lista2 <- ts(
+  l2,
+  start = c(2003, 1),
+  end = c(2022, 6),
+  frequency = 12
+)
+
+ORD <- lista2[, c("gap", "ipca", "exp12", "selic", "swap")]
+```
+
+```{r}
+#| panel: sidebar
+numericInput(
+  "lags",
+  "Número de defasagens:",
+  value = 5,
+  min = 1,
+  max = 12
+)
+
+selectInput(
+  "tipo",
+  "Termos determinísticos:",
+  choices = c(
+    "Constante" = "const",
+    "Tendência" = "trend",
+    "Constante + tendência" = "both",
+    "Nenhum" = "none"
+  )
+)
+
+actionButton(
+  "estimar",
+  "Estimar VAR",
+  class = "btn-primary"
+)
+
+hr()
+h5("Impulso-resposta")
+
+selectInput(
+  "impulso",
+  "Choque (impulso):",
+  choices = c("gap", "ipca", "exp12", "selic", "swap"),
+  selected = "selic"
+)
+
+selectInput(
+  "resposta",
+  "Respostas de:",
+  choices = c("gap", "ipca", "exp12", "selic", "swap"),
+  selected = c("gap", "ipca"),
+  multiple = TRUE
+)
+
+numericInput(
+  "horizonte",
+  "Horizonte (meses):",
+  value = 24,
+  min = 6,
+  max = 60
+)
+
+numericInput(
+  "runs",
+  "Replicações do bootstrap:",
+  value = 500,
+  min = 50,
+  max = 2000,
+  step = 50
+)
+
+checkboxInput(
+  "ortho",
+  "Ortogonalizar (Cholesky, ordem: gap, ipca, exp12, selic, swap)",
+  value = TRUE
+)
+
+checkboxInput(
+  "boot",
+  "Intervalo de confiança (bootstrap, mais lento)",
+  value = TRUE
+)
+```
+
+::: {.panel-tabset}
+
+## VAR (forma reduzida)
+
+::: {.panel-tabset}
+
+### Resumo do VAR
+
+```{r}
+verbatimTextOutput("resumo")
+```
+
+### Seleção de defasagens
+
+```{r}
+verbatimTextOutput("selecao")
+```
+
+### Diagnóstico
+
+```{r}
+verbatimTextOutput("diagnostico")
+```
+
+### Impulso-resposta
+
+```{r}
+plotOutput("irf_plot", height = "auto")
+```
+
+:::
+
+## SVAR
+
+Antes de estimar, escolha as defasagens e o tipo de termos determinísticos na barra lateral e clique em **Estimar VAR** — o SVAR usa esse modelo como base. A restrição recursiva (triangular inferior, ordem gap, ipca, exp12, selic, swap) já vem fixa; marque abaixo hipóteses extras para testar, exatamente como nas letras B, C e D do seu script.
+
+```{r}
+checkboxGroupInput(
+  "restricoes_extra",
+  "Restrições extras (zero contemporâneo):",
+  choices = c(
+    "Selic não reage a gap, ipca e exp12 (letra B)"      = "selic_todas",
+    "Ipca não reage a gap (letra C)"                      = "ipca_gap",
+    "Selic não reage a ipca e a exp12 (letra D)"          = "selic_ipca_exp",
+    "Selic não reage só a ipca"                            = "selic_ipca",
+    "Selic não reage só a exp12"                           = "selic_exp",
+    "Swap não reage a selic"                               = "swap_selic"
+  )
+)
+
+actionButton(
+  "estimar_svar",
+  "Estimar SVAR",
+  class = "btn-primary"
+)
+```
+
+::: {.panel-tabset}
+
+### Resumo do SVAR
+
+```{r}
+verbatimTextOutput("svar_resumo")
+```
+
+### Matriz de restrições (A)
+
+```{r}
+verbatimTextOutput("svar_amat")
+```
+
+### Impulso-resposta
+
+Reaproveita o choque, as respostas, o horizonte e as replicações escolhidos na barra lateral. Como o choque já é estrutural, a IRF do SVAR sai sempre ortogonalizada, independente da caixa "Ortogonalizar" da barra lateral (que só vale para a aba do VAR reduzido).
+
+```{r}
+plotOutput("irf_svar_plot", height = "auto")
+```
+
+:::
+
+## BVAR
+
+Estimação bayesiana (prior de Minnesota + Metropolis-Hastings), pelo pacote `BVAR`. A amostragem de MCMC pode demorar bastante dependendo de `n_draw`; comece com valores baixos para testar e só depois suba para os valores finais.
+
+```{r}
+h4("Priors e amostrador")
+
+fluidRow(
+  column(3,
+    numericInput("bvar_lags", "Defasagens:", value = 6, min = 1, max = 12)
+  ),
+  column(3,
+    numericInput("bvar_ndraw", "n_draw:", value = 15000, min = 500, step = 500)
+  ),
+  column(3,
+    numericInput("bvar_nburn", "n_burn:", value = 5000, min = 0, step = 500)
+  ),
+  column(3,
+    numericInput("bvar_nthin", "n_thin:", value = 1, min = 1, step = 1)
+  )
+)
+
+fluidRow(
+  column(3,
+    numericInput("mn_lambda_mode", "Lambda (moda):", value = 0.8, min = 0, step = 0.05)
+  ),
+  column(3,
+    numericInput("mn_lambda_sd", "Lambda (dp):", value = 0.4, min = 0, step = 0.05)
+  ),
+  column(3,
+    numericInput("mn_lambda_min", "Lambda (mín.):", value = 0.0001, min = 0, step = 0.0001)
+  ),
+  column(3,
+    numericInput("mn_lambda_max", "Lambda (máx.):", value = 5, min = 0, step = 0.5)
+  )
+)
+
+fluidRow(
+  column(3,
+    numericInput("mn_alpha_mode", "Alpha (moda):", value = 3, min = 0, step = 0.5)
+  ),
+  column(3,
+    numericInput("mn_var", "Var (psi):", value = 1e07, min = 0)
+  ),
+  column(3,
+    checkboxInput("mh_adjust_acc", "Ajustar taxa de aceitação", value = TRUE)
+  ),
+  column(3,
+    numericInput("mh_acc_lower", "Aceit. mín.:", value = 0.25, min = 0, max = 1, step = 0.05)
+  )
+)
+
+fluidRow(
+  column(3,
+    numericInput("mh_acc_upper", "Aceit. máx.:", value = 0.45, min = 0, max = 1, step = 0.05)
+  )
+)
+
+actionButton(
+  "estimar_bvar",
+  "Estimar BVAR",
+  class = "btn-primary"
+)
+```
+
+::: {.panel-tabset}
+
+### Resumo e traço
+
+```{r}
+verbatimTextOutput("bvar_resumo")
+```
+
+```{r}
+plotOutput("bvar_plot", height = "600px")
+```
+
+### Densidades (selic)
+
+Reproduz `plot(x2, type = "density", vars_response = "selic", vars_impulse = "selic-lagN")` para as defasagens 1, 2 e 3 (se existirem no modelo estimado).
+
+```{r}
+plotOutput("bvar_dens1", height = "300px")
+plotOutput("bvar_dens2", height = "300px")
+plotOutput("bvar_dens3", height = "300px")
+```
+
+### Convergência (Geweke)
+
+Teste de Geweke para `lambda` e `alpha`, com o p-valor de cada estatística.
+
+```{r}
+verbatimTextOutput("bvar_geweke")
+```
+
+### Estabilidade
+
+`companion()` do modelo, com bandas de confiança.
+
+```{r}
+numericInput("bvar_conf_companion", "Banda de confiança:", value = 0.10, min = 0, max = 0.49, step = 0.01)
+verbatimTextOutput("bvar_companion")
+```
+
+### Impulso-resposta e FEVD
+
+Reaproveita o choque, as respostas e o horizonte da barra lateral.
+
+```{r}
+fluidRow(
+  column(4, checkboxInput("bvar_fevd", "Calcular FEVD", value = TRUE)),
+  column(4, checkboxInput("bvar_ident", "Identificação (Cholesky)", value = TRUE)),
+  column(4, numericInput("bvar_conf_irf", "Banda de confiança IRF:", value = 0.05, min = 0.01, max = 0.49, step = 0.01))
+)
+actionButton("calcular_irf_bvar", "Calcular impulso-resposta", class = "btn-secondary")
+```
+
+```{r}
+plotOutput("bvar_irf_plot", height = "auto")
+```
+
+:::
+
+:::
+
+
+```{r}
+#| context: server
+
+# O modelo só é (re)estimado quando o botão é clicado
+modelo <- eventReactive(input$estimar, {
+  validate(
+    need(!is.na(input$lags) && input$lags >= 1 && input$lags <= 12,
+         "Escolha um número de defasagens entre 1 e 12.")
+  )
+  p_lags <- as.integer(input$lags)
+  tipo   <- input$tipo
+
+  # bquote() grava os VALORES (ex.: p = 5, type = "const") na chamada do modelo.
+  # Sem isso, o bootstrap do irf() tenta reavaliar 'input$lags' fora do Shiny e falha.
+  eval(bquote(VAR(ORD, p = .(p_lags), type = .(tipo))))
+})
+
+output$resumo <- renderPrint({
+  summary(modelo())
+})
+
+output$selecao <- renderPrint({
+  VARselect(ORD, lag.max = 12, type = input$tipo)
+})
+
+output$diagnostico <- renderPrint({
+  m <- modelo()
+  cat("=== Raízes do polinômio característico (estabilidade: todas < 1) ===\n")
+  print(roots(m))
+  cat("\n=== Teste de autocorrelação serial (Portmanteau) ===\n")
+  print(serial.test(m, lags.pt = 12, type = "PT.asymptotic"))
+})
+
+# Função impulso-resposta: recalcula quando o modelo ou as escolhas mudam
+irf_res <- reactive({
+  m <- modelo()
+  validate(
+    need(length(input$resposta) >= 1,
+         "Escolha ao menos uma variável de resposta."),
+    need(!is.na(input$horizonte) && input$horizonte >= 1,
+         "Escolha um horizonte válido."),
+    need(!is.na(input$runs) && input$runs >= 50,
+         "Use ao menos 50 replicações.")
+  )
+  irf(
+    m,
+    impulse  = input$impulso,
+    response = input$resposta,
+    n.ahead  = input$horizonte,
+    ortho    = input$ortho,
+    boot     = input$boot,
+    runs     = input$runs,
+    ci       = 0.95
+  )
+})
+
+output$irf_plot <- renderPlot({
+  plot(irf_res())
+}, height = function() 250 * max(1, length(input$resposta)) + 100)
+
+# --- SVAR --------------------------------------------------------------
+
+# Monta a matriz de restrições: base recursiva (ordem gap, ipca, exp12,
+# selic, swap) + as hipóteses extras marcadas nas caixas de seleção
+montar_amat <- function(extras) {
+  amat <- matrix(NA, nrow = 5, ncol = 5)
+  amat[1, 2:5] <- 0
+  amat[2, 3:5] <- 0
+  amat[3, 4:5] <- 0
+  amat[4, 5]   <- 0
+
+  if ("selic_todas"    %in% extras) amat[4, 1:3] <- 0
+  if ("ipca_gap"       %in% extras) amat[2, 1]   <- 0
+  if ("selic_ipca_exp" %in% extras) amat[4, 2:3] <- 0
+  if ("selic_ipca"     %in% extras) amat[4, 2]   <- 0
+  if ("selic_exp"      %in% extras) amat[4, 3]   <- 0
+  if ("swap_selic"     %in% extras) amat[5, 4]   <- 0
+
+  amat
+}
+
+# Só (re)estima quando "Estimar SVAR" é clicado; usa o VAR reduzido (modelo())
+# como base, então é preciso ter clicado em "Estimar VAR" antes
+svar_modelo <- eventReactive(input$estimar_svar, {
+  m <- tryCatch(modelo(), error = function(e) NULL)
+  validate(
+    need(!is.null(m), "Estime o VAR na aba 'VAR (forma reduzida)' antes de estimar o SVAR.")
+  )
+  amat <- montar_amat(input$restricoes_extra)
+
+  # Guarda o modelo e a matriz numa posição fixa e global, e a chamada do
+  # SVAR referencia esses nomes (.svar_x, .svar_amat) em vez de embutir os
+  # objetos inteiros na chamada (o que deixaria o "Call:" do summary enorme)
+  # ou depender de uma variável local (que some quando o irf() reavalia a
+  # chamada fora do Shiny para o bootstrap).
+  assign(".svar_x", m, envir = .GlobalEnv)
+  assign(".svar_amat", amat, envir = .GlobalEnv)
+
+  svar <- SVAR(
+    x = .svar_x, estmethod = "scoring", Amat = .svar_amat, Bmat = NULL,
+    max.iter = 500, maxls = 1000, conv.crit = 1.0e-8
+  )
+  list(svar = svar, amat = amat)
+})
+
+output$svar_resumo <- renderPrint({
+  summary(svar_modelo()$svar)
+})
+
+output$svar_amat <- renderPrint({
+  print(svar_modelo()$amat)
+})
+
+irf_svar_res <- reactive({
+  s <- svar_modelo()$svar
+  validate(
+    need(length(input$resposta) >= 1,
+         "Escolha ao menos uma variável de resposta."),
+    need(!is.na(input$horizonte) && input$horizonte >= 1,
+         "Escolha um horizonte válido."),
+    need(!is.na(input$runs) && input$runs >= 50,
+         "Use ao menos 50 replicações.")
+  )
+  irf(
+    s,
+    impulse  = input$impulso,
+    response = input$resposta,
+    n.ahead  = input$horizonte,
+    ortho    = TRUE,
+    boot     = input$boot,
+    runs     = input$runs,
+    ci       = 0.95
+  )
+})
+
+output$irf_svar_plot <- renderPlot({
+  plot(irf_svar_res())
+}, height = function() 250 * max(1, length(input$resposta)) + 100)
+
+# --- BVAR ----------------------------------------------------------------
+
+bvar_modelo <- eventReactive(input$estimar_bvar, {
+  mn <- bv_minnesota(
+    lambda = bv_lambda(mode = input$mn_lambda_mode, sd = input$mn_lambda_sd,
+                        min = input$mn_lambda_min, max = input$mn_lambda_max),
+    alpha = bv_alpha(mode = input$mn_alpha_mode),
+    var = input$mn_var
+  )
+  priors <- bv_priors(hyper = "auto", mn = mn)
+  mh <- bv_metropolis(
+    adjust_acc = input$mh_adjust_acc,
+    acc_lower  = input$mh_acc_lower,
+    acc_upper  = input$mh_acc_upper
+  )
+  # verbose = FALSE: o progresso da amostragem vai para o console de R, não
+  # para o app; ainda assim a barra de progresso do próprio bvar() aparece lá
+  bvar(
+    ORD, lags = input$bvar_lags,
+    n_draw = input$bvar_ndraw, n_burn = input$bvar_nburn, n_thin = input$bvar_nthin,
+    priors = priors, mh = mh, verbose = FALSE
+  )
+})
+
+output$bvar_resumo <- renderPrint({
+  summary(bvar_modelo())
+})
+
+output$bvar_plot <- renderPlot({
+  plot(bvar_modelo())
+})
+
+# Densidade de selic-lagN -> selic; valida se a defasagem existe no modelo
+plot_bvar_dens <- function(lag_n) {
+  m <- bvar_modelo()
+  validate(
+    need(lag_n <= input$bvar_lags,
+         paste0("O modelo estimado tem só ", input$bvar_lags, " defasagem(ns)."))
+  )
+  plot(m, type = "density", vars_response = "selic",
+       vars_impulse = paste0("selic-lag", lag_n))
+}
+
+output$bvar_dens1 <- renderPlot({ plot_bvar_dens(1) })
+output$bvar_dens2 <- renderPlot({ plot_bvar_dens(2) })
+output$bvar_dens3 <- renderPlot({ plot_bvar_dens(3) })
+
+output$bvar_geweke <- renderPrint({
+  mc <- as.mcmc(bvar_modelo(), vars = c("lambda", "alpha"))
+  gd <- geweke.diag(mc)
+  print(gd)
+  cat("\np-valores (H0: as duas metades da cadeia têm a mesma média):\n")
+  print(pnorm(abs(gd$z), lower.tail = FALSE) * 2)
+})
+
+output$bvar_companion <- renderPrint({
+  validate(
+    need(!is.na(input$bvar_conf_companion) &&
+           input$bvar_conf_companion > 0 && input$bvar_conf_companion < 0.5,
+         "Escolha uma banda de confiança entre 0 e 0,5.")
+  )
+  companion(bvar_modelo(), conf_bands = input$bvar_conf_companion)
+})
+
+# Só calcula a IRF/FEVD quando o botão é clicado, porque é a etapa mais lenta
+bvar_irf_res <- eventReactive(input$calcular_irf_bvar, {
+  m <- bvar_modelo()
+  validate(
+    need(length(input$resposta) >= 1,
+         "Escolha ao menos uma variável de resposta na barra lateral."),
+    need(!is.na(input$horizonte) && input$horizonte >= 1,
+         "Escolha um horizonte válido na barra lateral."),
+    need(!is.na(input$bvar_conf_irf) &&
+           input$bvar_conf_irf > 0 && input$bvar_conf_irf < 0.5,
+         "Escolha uma banda de confiança entre 0 e 0,5.")
+  )
+  opt_irf <- bv_irf(
+    horizon        = input$horizonte,
+    fevd           = input$bvar_fevd,
+    identification = input$bvar_ident
+  )
+  irf(m) <- irf(m, opt_irf, conf_bands = input$bvar_conf_irf)
+  m
+})
+
+output$bvar_irf_plot <- renderPlot({
+  plot(
+    irf(bvar_irf_res()),
+    area = TRUE,
+    vars_impulse = input$impulso,
+    vars_response = input$resposta
+  )
+}, height = function() 250 * max(1, length(input$resposta)) + 100)
+```
